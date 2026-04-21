@@ -153,7 +153,7 @@ static int write_tree_level(const IndexEntry *entries, int count,
             te->mode = entries[i].mode;
             strncpy(te->name, rel, sizeof(te->name) - 1);
             te->name[sizeof(te->name) - 1] = '\0';
-            te->hash = entries[i].id;
+            te->hash = entries[i].hash;
             i++;
         }
     }

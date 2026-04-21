@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <inttypes.h>
 
 // ─── PROVIDED ────────────────────────────────────────────────────────────────
 
@@ -132,7 +133,7 @@ int index_load(Index *index) {
         IndexEntry *e = &index->entries[index->count];
 
         char hex[HASH_HEX_SIZE + 2];
-        unsigned int mode;
+        unsigned int mode = 0;
         uint64_t mtime, size;
         char path[512];
 
@@ -148,7 +149,7 @@ int index_load(Index *index) {
         strncpy(e->path, path, sizeof(e->path) - 1);
         e->path[sizeof(e->path) - 1] = '\0';
 
-        if (hex_to_hash(hex, &e->id) != 0) {
+        if (hex_to_hash(hex, &e->hash) != 0) {
             fclose(f);
             return -1;
         }
@@ -165,20 +166,22 @@ static int compare_index_entries(const void *a, const void *b) {
 }
 
 int index_save(const Index *index) {
-    // Sort entries by path
-    Index sorted = *index;
-    qsort(sorted.entries, sorted.count, sizeof(IndexEntry), compare_index_entries);
+    // Heap allocate to avoid stack overflow (Index struct is very large)
+    Index *sorted = malloc(sizeof(Index));
+    if (!sorted) return -1;
+    *sorted = *index;
+    qsort(sorted->entries, sorted->count, sizeof(IndexEntry), compare_index_entries);
 
     char tmp_path[256];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", INDEX_FILE);
 
     FILE *f = fopen(tmp_path, "w");
-    if (!f) return -1;
+    if (!f) { free(sorted); return -1; }
 
-    for (int i = 0; i < sorted.count; i++) {
-        const IndexEntry *e = &sorted.entries[i];
+    for (int i = 0; i < sorted->count; i++) {
+        const IndexEntry *e = &sorted->entries[i];
         char hex[HASH_HEX_SIZE + 1];
-        hash_to_hex(&e->id, hex);
+        hash_to_hex(&e->hash, hex);
         fprintf(f, "%o %s %"PRIu64" %"PRIu64" %s\n",
                 e->mode, hex,
                 (uint64_t)e->mtime_sec,
@@ -186,10 +189,10 @@ int index_save(const Index *index) {
                 e->path);
     }
 
-    // Flush, fsync, then atomic rename
-    if (fflush(f) != 0)        { fclose(f); unlink(tmp_path); return -1; }
-    if (fsync(fileno(f)) != 0) { fclose(f); unlink(tmp_path); return -1; }
+    if (fflush(f) != 0)        { fclose(f); free(sorted); unlink(tmp_path); return -1; }
+    if (fsync(fileno(f)) != 0) { fclose(f); free(sorted); unlink(tmp_path); return -1; }
     fclose(f);
+    free(sorted);
 
     if (rename(tmp_path, INDEX_FILE) != 0) { unlink(tmp_path); return -1; }
     return 0;
@@ -231,14 +234,14 @@ int index_add(Index *index, const char *path) {
     // Step 4: Upsert index entry
     IndexEntry *existing = index_find(index, path);
     if (existing) {
-        existing->id        = blob_id;
+        existing->hash        = blob_id;
         existing->mode      = mode;
         existing->mtime_sec = (uint64_t)st.st_mtime;
         existing->size      = (uint64_t)st.st_size;
     } else {
         if (index->count >= MAX_INDEX_ENTRIES) return -1;
         IndexEntry *e = &index->entries[index->count++];
-        e->id        = blob_id;
+        e->hash        = blob_id;
         e->mode      = mode;
         e->mtime_sec = (uint64_t)st.st_mtime;
         e->size      = (uint64_t)st.st_size;
