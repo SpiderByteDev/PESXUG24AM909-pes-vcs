@@ -1,4 +1,4 @@
-// object.c — Content-addressable object store
+ // object.c — Content-addressable object store
 //
 // Every piece of data (file contents, directory listings, commits) is stored
 // as an "object" named by its SHA-256 hash. Objects are stored under
@@ -72,7 +72,7 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     // Step 2: Format header "type size\0" and combine with data
     char header[64];
     int header_len = snprintf(header, sizeof(header), "%s %zu", type_str, len);
-    size_t full_len = (size_t)header_len + 1 + len; // +1 for '\0'
+    size_t full_len = (size_t)header_len + 1 + len;
 
     uint8_t *full_obj = malloc(full_len);
     if (!full_obj) return -1;
@@ -80,11 +80,49 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     full_obj[header_len] = '\0';
     memcpy(full_obj + header_len + 1, data, len);
 
-    // Step 3: Compute SHA-256 hash of full object (header + data)
+    // Step 3: Compute SHA-256 hash of full object
     compute_hash(full_obj, full_len, id_out);
 
+    // Step 4: Deduplication — if object already exists, skip write
+    if (object_exists(id_out)) {
+        free(full_obj);
+        return 0;
+    }
+
+    // Step 5: Create shard directory .pes/objects/XX/
+    char hex[HASH_HEX_SIZE + 1];
+    hash_to_hex(id_out, hex);
+    char shard_dir[512];
+    snprintf(shard_dir, sizeof(shard_dir), "%s/%.2s", OBJECTS_DIR, hex);
+    mkdir(shard_dir, 0755);
+
+    // Step 6: Write to temp file in shard directory
+    char final_path[512];
+    object_path(id_out, final_path, sizeof(final_path));
+    char tmp_path[520];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", final_path);
+
+    int fd = open(tmp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) { free(full_obj); return -1; }
+
+    ssize_t written = write(fd, full_obj, full_len);
     free(full_obj);
-    return -1; // disk write not yet implemented
+    if (written < 0 || (size_t)written != full_len) {
+        close(fd); unlink(tmp_path); return -1;
+    }
+
+    // Step 7: fsync temp file to ensure data reaches disk
+    if (fsync(fd) != 0) { close(fd); unlink(tmp_path); return -1; }
+    close(fd);
+
+    // Step 8: Atomic rename temp -> final path
+    if (rename(tmp_path, final_path) != 0) { unlink(tmp_path); return -1; }
+
+    // Step 9: fsync the shard directory to persist the rename
+    int dir_fd = open(shard_dir, O_RDONLY);
+    if (dir_fd >= 0) { fsync(dir_fd); close(dir_fd); }
+
+    return 0;
 }
 
 int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out) {
