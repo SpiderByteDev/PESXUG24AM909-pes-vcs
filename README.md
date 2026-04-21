@@ -63,6 +63,8 @@
 ---
 
 ## Integration Test
+![integration-1](screenshots/Screenshot%202026-04-21%20131356.png)
+![integration-2](screenshots/Screenshot%202026-04-21%20131414.png)
 
 
 ### Screenshot — `make test-integration`
