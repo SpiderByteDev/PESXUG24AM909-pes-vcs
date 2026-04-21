@@ -60,7 +60,6 @@ int object_exists(const ObjectID *id) {
 // ─── TODO: Implement these ───────────────────────────────────────────────────
 
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
-    // Step 1: Build the type header string
     const char *type_str;
     switch (type) {
         case OBJ_BLOB:   type_str = "blob";   break;
@@ -69,7 +68,6 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
         default: return -1;
     }
 
-    // Step 2: Format header "type size\0" and combine with data
     char header[64];
     int header_len = snprintf(header, sizeof(header), "%s %zu", type_str, len);
     size_t full_len = (size_t)header_len + 1 + len;
@@ -80,23 +78,19 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     full_obj[header_len] = '\0';
     memcpy(full_obj + header_len + 1, data, len);
 
-    // Step 3: Compute SHA-256 hash of full object
     compute_hash(full_obj, full_len, id_out);
 
-    // Step 4: Deduplication — if object already exists, skip write
     if (object_exists(id_out)) {
         free(full_obj);
         return 0;
     }
 
-    // Step 5: Create shard directory .pes/objects/XX/
     char hex[HASH_HEX_SIZE + 1];
     hash_to_hex(id_out, hex);
     char shard_dir[512];
     snprintf(shard_dir, sizeof(shard_dir), "%s/%.2s", OBJECTS_DIR, hex);
     mkdir(shard_dir, 0755);
 
-    // Step 6: Write to temp file in shard directory
     char final_path[512];
     object_path(id_out, final_path, sizeof(final_path));
     char tmp_path[520];
@@ -111,14 +105,11 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
         close(fd); unlink(tmp_path); return -1;
     }
 
-    // Step 7: fsync temp file to ensure data reaches disk
     if (fsync(fd) != 0) { close(fd); unlink(tmp_path); return -1; }
     close(fd);
 
-    // Step 8: Atomic rename temp -> final path
     if (rename(tmp_path, final_path) != 0) { unlink(tmp_path); return -1; }
 
-    // Step 9: fsync the shard directory to persist the rename
     int dir_fd = open(shard_dir, O_RDONLY);
     if (dir_fd >= 0) { fsync(dir_fd); close(dir_fd); }
 
@@ -126,6 +117,54 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 }
 
 int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out) {
-    (void)id; (void)type_out; (void)data_out; (void)len_out;
-    return -1;
+    // Step 1: Build path and read entire file into memory
+    char path[512];
+    object_path(id, path, sizeof(path));
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (file_size <= 0) { fclose(f); return -1; }
+
+    uint8_t *raw = malloc((size_t)file_size);
+    if (!raw) { fclose(f); return -1; }
+    if (fread(raw, 1, (size_t)file_size, f) != (size_t)file_size) {
+        free(raw); fclose(f); return -1;
+    }
+    fclose(f);
+
+    // Step 2: Integrity check — recompute hash and compare to expected
+    ObjectID computed;
+    compute_hash(raw, (size_t)file_size, &computed);
+    if (memcmp(computed.hash, id->hash, HASH_SIZE) != 0) {
+        free(raw);
+        return -1; // corrupted object
+    }
+
+    // Step 3: Find '\0' separating header from data
+    uint8_t *null_byte = memchr(raw, '\0', (size_t)file_size);
+    if (!null_byte) { free(raw); return -1; }
+
+    // Step 4: Parse type string from header
+    if      (strncmp((char *)raw, "blob ",   5) == 0) *type_out = OBJ_BLOB;
+    else if (strncmp((char *)raw, "tree ",   5) == 0) *type_out = OBJ_TREE;
+    else if (strncmp((char *)raw, "commit ", 7) == 0) *type_out = OBJ_COMMIT;
+    else { free(raw); return -1; }
+
+    // Step 5: Extract data portion (everything after '\0')
+    size_t data_offset = (size_t)(null_byte - raw) + 1;
+    size_t data_len    = (size_t)file_size - data_offset;
+
+    void *data = malloc(data_len + 1);
+    if (!data) { free(raw); return -1; }
+    memcpy(data, raw + data_offset, data_len);
+    ((uint8_t *)data)[data_len] = '\0';
+
+    free(raw);
+    *data_out = data;
+    *len_out  = data_len;
+    return 0;
 }
