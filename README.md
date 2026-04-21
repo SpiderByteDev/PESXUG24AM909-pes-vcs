@@ -50,19 +50,23 @@
 
 ### Screenshot 4A — `pes log` with three commits
 ![4A](screenshots/Screenshot%202026-04-21%20125517.png)
+![4a](screenshots/Screenshot%202026-04-21%20125529.png)
 
 ### Screenshot 4B — `find .pes -type f | sort` showing object growth
-![4B](screenshots/Screenshot%202026-04-21%20125529.png)
+![4B](screenshots/Screenshot%202026-04-21%20125616.png)
+
 
 ### Screenshot 4C — `cat .pes/refs/heads/main` and `cat .pes/HEAD`
-![4C](screenshots/Screenshot%202026-04-21%20125616.png)
+![4c](screenshots/Screenshot%202026-04-21%20125704.png)
+
 
 ---
 
 ## Integration Test
 
+
 ### Screenshot — `make test-integration`
-![integration](screenshots/Screenshot%202026-04-21%20125704.png)
+
 
 ---
 
